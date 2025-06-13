@@ -196,6 +196,21 @@ pub struct S3Config {
 
     /// Indicates whether the client agrees to pay for the requests made to the S3 bucket.
     pub enable_request_payer: bool,
+
+    /// Enable remote signing.
+    pub remote_signing_enabled: bool,
+
+    /// Signer to use for remote signing.
+    pub signer: Option<String>,
+
+    /// Signer URI to use for remote signing.
+    pub signer_uri: Option<String>,
+
+    /// Signer endpoint to use for remote signing.
+    pub signer_endpoint: Option<String>,
+
+    /// Authorization token to use on external requests, like for remote signing.
+    pub token: Option<String>,
 }
 
 impl Debug for S3Config {
