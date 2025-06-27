@@ -128,6 +128,11 @@ pub trait HttpFetch: Send + Sync + Unpin + 'static {
         &self,
         req: Request<Buffer>,
     ) -> impl Future<Output = Result<Response<HttpBody>>> + MaybeSend;
+
+    /// Get the original reqwest::Client, if possible.
+    fn get_client(&self) -> Option<reqwest::Client> {
+        None
+    }
 }
 
 /// HttpFetchDyn is the dyn version of [`HttpFetch`]
@@ -138,17 +143,28 @@ pub trait HttpFetchDyn: Send + Sync + Unpin + 'static {
     ///
     /// This function returns a boxed future to make it object safe.
     fn fetch_dyn(&self, req: Request<Buffer>) -> BoxedFuture<Result<Response<HttpBody>>>;
+
+    /// The dyn version of [`HttpFetch::get_client`].
+    fn get_client_dyn(&self) -> Option<reqwest::Client>;
 }
 
 impl<T: HttpFetch + ?Sized> HttpFetchDyn for T {
     fn fetch_dyn(&self, req: Request<Buffer>) -> BoxedFuture<Result<Response<HttpBody>>> {
         Box::pin(self.fetch(req))
     }
+
+    fn get_client_dyn(&self) -> Option<reqwest::Client> {
+        self.get_client()
+    }
 }
 
 impl<T: HttpFetchDyn + ?Sized> HttpFetch for Arc<T> {
     async fn fetch(&self, req: Request<Buffer>) -> Result<Response<HttpBody>> {
         self.deref().fetch_dyn(req).await
+    }
+
+    fn get_client(&self) -> Option<reqwest::Client> {
+        self.deref().get_client_dyn()
     }
 }
 
@@ -237,6 +253,11 @@ impl HttpFetch for reqwest::Client {
 
         let resp = hr.body(bs).expect("response must build succeed");
         Ok(resp)
+    }
+
+    /// Get the original reqwest::Client, if possible.
+    fn get_client(&self) -> Option<reqwest::Client> {
+        Some(self.clone())
     }
 }
 

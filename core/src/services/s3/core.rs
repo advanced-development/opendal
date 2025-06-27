@@ -124,9 +124,14 @@ impl Debug for S3Core {
 impl S3Core {
     /// If credential is not found, we will not sign the request.
     async fn load_credential(&self) -> Result<Option<AwsCredential>> {
+        let http_client = match self.info.http_client().into_inner().get_client() {
+            Some(client) => client,
+            None => GLOBAL_REQWEST_CLIENT.clone(),
+        };
+
         let cred = self
             .loader
-            .load_credential(GLOBAL_REQWEST_CLIENT.clone())
+            .load_credential(http_client)
             .await
             .map_err(new_request_credential_error)?;
 
