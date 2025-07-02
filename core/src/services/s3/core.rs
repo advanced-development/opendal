@@ -164,7 +164,10 @@ impl S3Core {
     }
 
     pub async fn sign<T: Send + Sync + 'static>(&self, req: &mut Request<T>) -> Result<()> {
-        let cred = if let Some(cred) = self.load_credential().await? {
+        let cred = if matches!(self.signer, SignerImpl::Rest(_)) {
+            // when using remote signing, we don't need (nor probably have) credentials
+            AwsCredential::default()
+        } else if let Some(cred) = self.load_credential().await? {
             cred
         } else {
             return Ok(());
@@ -191,7 +194,12 @@ impl S3Core {
         req: &mut Request<T>,
         duration: Duration,
     ) -> Result<()> {
-        let cred = if let Some(cred) = self.load_credential().await? {
+        let cred = if matches!(self.signer, SignerImpl::Rest(_)) {
+            // when using remote signing, we don't need (nor probably have) credentials
+            // actually the remote signer does not support query signing, but let's go with it
+            // so we return the proper error
+            AwsCredential::default()
+        } else if let Some(cred) = self.load_credential().await? {
             cred
         } else {
             return Ok(());
