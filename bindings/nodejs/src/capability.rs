@@ -54,10 +54,64 @@ impl Capability {
         self.0.stat_with_if_none_match
     }
 
+    /// If operator supports stat with if modified since.
+    #[napi(getter)]
+    pub fn stat_with_if_modified_since(&self) -> bool {
+        self.0.stat_with_if_modified_since
+    }
+
+    /// If operator supports stat with if unmodified since.
+    #[napi(getter)]
+    pub fn stat_with_if_unmodified_since(&self) -> bool {
+        self.0.stat_with_if_unmodified_since
+    }
+
+    /// If operator supports stat with versions.
+    #[napi(getter)]
+    pub fn stat_with_version(&self) -> bool {
+        self.0.stat_with_version
+    }
+
+    /// If operator supports stat with override content type.
+    #[napi(getter)]
+    pub fn stat_with_override_content_type(&self) -> bool {
+        self.0.stat_with_override_content_type
+    }
+
+    /// If operator supports stat with override cache control.
+    #[napi(getter)]
+    pub fn stat_with_override_cache_control(&self) -> bool {
+        self.0.stat_with_override_cache_control
+    }
+
+    /// If operator supports stat with override content disposition.
+    #[napi(getter)]
+    pub fn stat_with_override_content_disposition(&self) -> bool {
+        self.0.stat_with_override_content_disposition
+    }
+
     /// If operator supports read.
     #[napi(getter)]
     pub fn read(&self) -> bool {
         self.0.read
+    }
+
+    /// If operator supports read with version.
+    #[napi(getter)]
+    pub fn read_with_version(&self) -> bool {
+        self.0.read_with_version
+    }
+
+    /// If operator supports read with range.
+    #[napi(getter)]
+    pub fn read_with_if_modified_since(&self) -> bool {
+        self.0.read_with_if_modified_since
+    }
+
+    /// If operator supports read with if unmodified since.
+    #[napi(getter)]
+    pub fn read_with_if_unmodified_since(&self) -> bool {
+        self.0.read_with_if_unmodified_since
     }
 
     /// If operator supports read with if matched.
@@ -201,6 +255,18 @@ impl Capability {
     #[napi(getter)]
     pub fn list_with_recursive(&self) -> bool {
         self.0.list_with_recursive
+    }
+
+    /// If backend supports list with versions.
+    #[napi(getter)]
+    pub fn list_with_versions(&self) -> bool {
+        self.0.list_with_versions
+    }
+
+    /// If backend supports list with deleted.
+    #[napi(getter)]
+    pub fn list_with_deleted(&self) -> bool {
+        self.0.list_with_deleted
     }
 
     /// If operator supports presign.

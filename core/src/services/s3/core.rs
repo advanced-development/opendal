@@ -45,10 +45,11 @@ use http::Request;
 use http::Response;
 use reqsign::AwsCredential;
 use reqsign::AwsCredentialLoad;
-use reqsign::AwsV4Signer;
+
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::signer::SignerImpl;
 use crate::raw::*;
 use crate::*;
 
@@ -104,7 +105,7 @@ pub struct S3Core {
     pub disable_list_objects_v2: bool,
     pub enable_request_payer: bool,
 
-    pub signer: AwsV4Signer,
+    pub signer: SignerImpl,
     pub loader: Box<dyn AwsCredentialLoad>,
     pub credential_loaded: AtomicBool,
     pub checksum_algorithm: Option<ChecksumAlgorithm>,
@@ -157,7 +158,7 @@ impl S3Core {
         ))
     }
 
-    pub async fn sign<T>(&self, req: &mut Request<T>) -> Result<()> {
+    pub async fn sign<T: Send + Sync + 'static>(&self, req: &mut Request<T>) -> Result<()> {
         let cred = if let Some(cred) = self.load_credential().await? {
             cred
         } else {
@@ -166,6 +167,7 @@ impl S3Core {
 
         self.signer
             .sign(req, &cred)
+            .await
             .map_err(new_request_sign_error)?;
 
         // Always remove host header, let users' client to set it based on HTTP
@@ -179,7 +181,11 @@ impl S3Core {
         Ok(())
     }
 
-    pub async fn sign_query<T>(&self, req: &mut Request<T>, duration: Duration) -> Result<()> {
+    pub async fn sign_query<T: Send + Sync + 'static>(
+        &self,
+        req: &mut Request<T>,
+        duration: Duration,
+    ) -> Result<()> {
         let cred = if let Some(cred) = self.load_credential().await? {
             cred
         } else {
@@ -188,6 +194,7 @@ impl S3Core {
 
         self.signer
             .sign_query(req, duration, &cred)
+            .await
             .map_err(new_request_sign_error)?;
 
         // Always remove host header, let users' client to set it based on HTTP
@@ -1033,11 +1040,11 @@ impl S3Core {
                 .expect("write into string must succeed");
         }
         if !delimiter.is_empty() {
-            write!(url, "&delimiter={}", delimiter).expect("write into string must succeed");
+            write!(url, "&delimiter={delimiter}").expect("write into string must succeed");
         }
 
         if let Some(limit) = limit {
-            write!(url, "&max-keys={}", limit).expect("write into string must succeed");
+            write!(url, "&max-keys={limit}").expect("write into string must succeed");
         }
         if !key_marker.is_empty() {
             write!(url, "&key-marker={}", percent_encode_path(key_marker))

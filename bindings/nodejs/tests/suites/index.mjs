@@ -24,6 +24,12 @@ import { checkRandomRootEnabled, generateRandomRoot, loadConfigFromEnv } from '.
 import { run as AsyncIOTestRun } from './async.suite.mjs'
 import { run as ServicesTestRun } from './services.suite.mjs'
 import { run as SyncIOTestRun } from './sync.suite.mjs'
+import { run as AsyncStatOptionsTestRun } from './asyncStatOptions.suite.mjs'
+import { run as SyncStatOptionsTestRun } from './syncStatOptions.suite.mjs'
+import { run as AsyncReadOptionsTestRun } from './asyncReadOptions.suite.mjs'
+import { run as SyncReadOptionsTestRun } from './syncReadOptions.suite.mjs'
+import { run as AsyncListOptionsTestRun } from './asyncListOptions.suite.mjs'
+import { run as SyncListOptionsTestRun } from './syncListOptions.suite.mjs'
 
 export function runner(testName, scheme) {
   if (!scheme) {
@@ -53,5 +59,11 @@ export function runner(testName, scheme) {
     AsyncIOTestRun(operator)
     ServicesTestRun(operator)
     SyncIOTestRun(operator)
+    AsyncStatOptionsTestRun(operator)
+    SyncStatOptionsTestRun(operator)
+    AsyncReadOptionsTestRun(operator)
+    SyncReadOptionsTestRun(operator)
+    AsyncListOptionsTestRun(operator)
+    SyncListOptionsTestRun(operator)
   })
 }

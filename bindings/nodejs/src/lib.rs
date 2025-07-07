@@ -27,8 +27,10 @@ use std::time::Duration;
 use futures::AsyncReadExt;
 use futures::TryStreamExt;
 use napi::bindgen_prelude::*;
+use opendal::options::{ListOptions, ReadOptions, ReaderOptions, StatOptions};
 
 mod capability;
+mod options;
 
 #[napi]
 pub struct Operator {
@@ -93,8 +95,17 @@ impl Operator {
     /// }
     /// ```
     #[napi]
-    pub async fn stat(&self, path: String) -> Result<Metadata> {
-        let meta = self.async_op.stat(&path).await.map_err(format_napi_error)?;
+    pub async fn stat(
+        &self,
+        path: String,
+        options: Option<options::StatOptions>,
+    ) -> Result<Metadata> {
+        let options = options.map_or_else(StatOptions::default, StatOptions::from);
+        let meta = self
+            .async_op
+            .stat_options(&path, options)
+            .await
+            .map_err(format_napi_error)?;
 
         Ok(Metadata(meta))
     }
@@ -109,8 +120,16 @@ impl Operator {
     /// }
     /// ```
     #[napi]
-    pub fn stat_sync(&self, path: String) -> Result<Metadata> {
-        let meta = self.blocking_op.stat(&path).map_err(format_napi_error)?;
+    pub fn stat_sync(
+        &self,
+        path: String,
+        options: Option<options::StatOptions>,
+    ) -> Result<Metadata> {
+        let options = options.map_or_else(StatOptions::default, StatOptions::from);
+        let meta = self
+            .blocking_op
+            .stat_options(&path, options)
+            .map_err(format_napi_error)?;
 
         Ok(Metadata(meta))
     }
@@ -195,10 +214,15 @@ impl Operator {
     /// const buf = await op.read("path/to/file");
     /// ```
     #[napi]
-    pub async fn read(&self, path: String) -> Result<Buffer> {
+    pub async fn read(
+        &self,
+        path: String,
+        options: Option<options::ReadOptions>,
+    ) -> Result<Buffer> {
+        let options = options.map_or_else(ReadOptions::default, ReadOptions::from);
         let res = self
             .async_op
-            .read(&path)
+            .read_options(&path, options)
             .await
             .map_err(format_napi_error)?
             .to_vec();
@@ -209,15 +233,20 @@ impl Operator {
     ///
     /// It could be used to read large file in a streaming way.
     #[napi]
-    pub async fn reader(&self, path: String) -> Result<Reader> {
+    pub async fn reader(
+        &self,
+        path: String,
+        options: Option<options::ReaderOptions>,
+    ) -> Result<Reader> {
+        let options = options.map_or_else(ReaderOptions::default, ReaderOptions::from);
         let r = self
             .async_op
-            .reader(&path)
+            .reader_options(&path, options)
             .await
             .map_err(format_napi_error)?;
         Ok(Reader {
             inner: r
-                .into_futures_async_read(..)
+                .into_futures_async_read(std::ops::RangeFull)
                 .await
                 .map_err(format_napi_error)?,
         })
@@ -230,10 +259,11 @@ impl Operator {
     /// const buf = op.readSync("path/to/file");
     /// ```
     #[napi]
-    pub fn read_sync(&self, path: String) -> Result<Buffer> {
+    pub fn read_sync(&self, path: String, options: Option<options::ReadOptions>) -> Result<Buffer> {
+        let options = options.map_or_else(ReadOptions::default, ReadOptions::from);
         let res = self
             .blocking_op
-            .read(&path)
+            .read_options(&path, options)
             .map_err(format_napi_error)?
             .to_vec();
         Ok(res.into())
@@ -243,8 +273,16 @@ impl Operator {
     ///
     /// It could be used to read large file in a streaming way.
     #[napi]
-    pub fn reader_sync(&self, path: String) -> Result<BlockingReader> {
-        let r = self.blocking_op.reader(&path).map_err(format_napi_error)?;
+    pub fn reader_sync(
+        &self,
+        path: String,
+        options: Option<options::ReaderOptions>,
+    ) -> Result<BlockingReader> {
+        let options = options.map_or_else(ReaderOptions::default, ReaderOptions::from);
+        let r = self
+            .blocking_op
+            .reader_options(&path, options)
+            .map_err(format_napi_error)?;
         Ok(BlockingReader {
             inner: r.into_std_read(..).map_err(format_napi_error)?,
         })
@@ -452,6 +490,22 @@ impl Operator {
             .map_err(format_napi_error)
     }
 
+    /// Remove given paths.
+    ///
+    /// ### Notes
+    /// If underlying services support delete in batch, we will use batch delete instead.
+    ///
+    /// ### Examples
+    /// ```javascript
+    /// op.removeSync(["abc", "def"]);
+    /// ```
+    #[napi]
+    pub fn remove_sync(&self, paths: Vec<String>) -> Result<()> {
+        self.blocking_op
+            .delete_iter(paths)
+            .map_err(format_napi_error)
+    }
+
     /// Remove the path and all nested dirs and files recursively.
     ///
     /// ### Notes
@@ -466,6 +520,22 @@ impl Operator {
         self.async_op
             .remove_all(&path)
             .await
+            .map_err(format_napi_error)
+    }
+
+    /// Remove the path and all nested dirs and files recursively.
+    ///
+    /// ### Notes
+    /// If underlying services support delete in batch, we will use batch delete instead.
+    ///
+    /// ### Examples
+    /// ```javascript
+    /// op.removeAllSync("path/to/dir/");
+    /// ```
+    #[napi]
+    pub fn remove_all_sync(&self, path: String) -> Result<()> {
+        self.blocking_op
+            .remove_all(&path)
             .map_err(format_napi_error)
     }
 
@@ -501,22 +571,19 @@ impl Operator {
     /// }
     /// ```
     #[napi]
-    pub async fn list(&self, path: String, options: Option<ListOptions>) -> Result<Vec<Entry>> {
-        let mut l = self.async_op.list_with(&path);
-        if let Some(options) = options {
-            if let Some(limit) = options.limit {
-                l = l.limit(limit as usize);
-            }
-            if let Some(recursive) = options.recursive {
-                l = l.recursive(recursive);
-            }
-        }
+    pub async fn list(
+        &self,
+        path: String,
+        options: Option<options::ListOptions>,
+    ) -> Result<Vec<Entry>> {
+        let options = options.map_or(ListOptions::default(), ListOptions::from);
+        let l = self
+            .async_op
+            .list_options(&path, options)
+            .await
+            .map_err(format_napi_error)?;
 
-        Ok(l.await
-            .map_err(format_napi_error)?
-            .iter()
-            .map(|e| Entry(e.to_owned()))
-            .collect())
+        Ok(l.into_iter().map(Entry).collect())
     }
 
     /// List the given path synchronously.
@@ -544,18 +611,23 @@ impl Operator {
     /// ```javascript
     /// const list = op.listSync("path/to/dir/", { recursive: true });
     /// for (let entry of list) {
-    ///   let meta = op.statSync(entry.path);
+    ///   let path = entry.path();
+    ///   let meta = entry.metadata();
     ///   if (meta.isFile) {
     ///     // do something
     ///   }
     /// }
     /// ```
     #[napi]
-    pub fn list_sync(&self, path: String, options: Option<ListOptions>) -> Result<Vec<Entry>> {
-        let options = options.unwrap_or_default();
+    pub fn list_sync(
+        &self,
+        path: String,
+        options: Option<options::ListOptions>,
+    ) -> Result<Vec<Entry>> {
+        let options = options.map_or(ListOptions::default(), ListOptions::from);
         let l = self
             .blocking_op
-            .list_options(&path, options.into())
+            .list_options(&path, options)
             .map_err(format_napi_error)?;
 
         Ok(l.into_iter().map(Entry).collect())
@@ -642,6 +714,32 @@ impl Entry {
     pub fn path(&self) -> String {
         self.0.path().to_string()
     }
+
+    /// Return the metadata of this entry.
+    #[napi]
+    pub fn metadata(&self) -> Metadata {
+        Metadata(self.0.metadata().clone())
+    }
+}
+
+#[napi]
+pub enum EntryMode {
+    /// FILE means the path has data to read.
+    FILE,
+    /// DIR means the path can be listed.
+    DIR,
+    /// Unknown means we don't know what we can do on this path.
+    Unknown,
+}
+
+impl From<opendal::EntryMode> for EntryMode {
+    fn from(mode: opendal::EntryMode) -> Self {
+        match mode {
+            opendal::EntryMode::FILE => EntryMode::FILE,
+            opendal::EntryMode::DIR => EntryMode::DIR,
+            opendal::EntryMode::Unknown => EntryMode::Unknown,
+        }
+    }
 }
 
 /// Metadata carries all metadata associated with a path.
@@ -660,6 +758,13 @@ impl Metadata {
     #[napi]
     pub fn is_file(&self) -> bool {
         self.0.is_file()
+    }
+
+    /// This function returns `true` if the file represented by this metadata has been marked for
+    /// deletion or has been permanently deleted.
+    #[napi]
+    pub fn is_deleted(&self) -> bool {
+        self.0.is_deleted()
     }
 
     /// Content-Disposition of this object
@@ -699,22 +804,17 @@ impl Metadata {
     pub fn last_modified(&self) -> Option<String> {
         self.0.last_modified().map(|ta| ta.to_rfc3339())
     }
-}
 
-#[napi(object)]
-#[derive(Default)]
-pub struct ListOptions {
-    pub limit: Option<u32>,
-    pub recursive: Option<bool>,
-}
+    /// mode represent this entry's mode.
+    #[napi(getter)]
+    pub fn mode(&self) -> Option<EntryMode> {
+        Some(self.0.mode().into())
+    }
 
-impl From<ListOptions> for opendal::options::ListOptions {
-    fn from(value: ListOptions) -> Self {
-        Self {
-            limit: value.limit.map(|v| v as usize),
-            recursive: value.recursive.unwrap_or_default(),
-            ..Default::default()
-        }
+    /// Retrieves the `version` of the file, if available.
+    #[napi(getter)]
+    pub fn version(&self) -> Option<String> {
+        self.0.version().map(|v| v.to_string())
     }
 }
 
@@ -1132,5 +1232,5 @@ impl RetryLayer {
 ///
 /// FIXME: handle error correctly.
 fn format_napi_error(err: impl Display) -> Error {
-    Error::from_reason(format!("{}", err))
+    Error::from_reason(format!("{err}"))
 }

@@ -24,6 +24,8 @@ mod error;
 #[cfg(feature = "services-s3")]
 mod lister;
 #[cfg(feature = "services-s3")]
+mod signer;
+#[cfg(feature = "services-s3")]
 mod writer;
 
 #[cfg(feature = "services-s3")]

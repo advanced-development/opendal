@@ -38,7 +38,6 @@ use reqsign::AwsAssumeRoleLoader;
 use reqsign::AwsConfig;
 use reqsign::AwsCredentialLoad;
 use reqsign::AwsDefaultLoader;
-use reqsign::AwsV4Signer;
 use reqwest::Url;
 
 use super::core::*;
@@ -48,10 +47,12 @@ use super::lister::S3ListerV1;
 use super::lister::S3ListerV2;
 use super::lister::S3Listers;
 use super::lister::S3ObjectVersionsLister;
+use super::signer::{AwsV4Signer, RestSigner, RestSignerConfig, SignerImpl};
 use super::writer::S3Writer;
 use super::writer::S3Writers;
 use crate::raw::oio::PageLister;
 use crate::raw::*;
+use crate::services::s3::signer::S3_V4_REST_SIGNER;
 use crate::services::S3Config;
 use crate::*;
 
@@ -643,7 +644,7 @@ impl S3Builder {
             endpoint.to_string()
         } else {
             // Prefix https if endpoint doesn't start with scheme.
-            format!("https://{}", endpoint)
+            format!("https://{endpoint}")
         };
 
         // Remove bucket name from endpoint.
@@ -789,7 +790,7 @@ impl Builder for S3Builder {
             v => {
                 return Err(Error::new(
                     ErrorKind::ConfigInvalid,
-                    format!("{:?} is not a supported checksum_algorithm.", v),
+                    format!("{v:?} is not a supported checksum_algorithm."),
                 ))
             }
         };
@@ -893,118 +894,134 @@ impl Builder for S3Builder {
             }
         };
 
-        let signer = AwsV4Signer::new("s3", &region);
-
         let delete_max_size = self
             .config
             .delete_max_size
             .unwrap_or(DEFAULT_BATCH_MAX_OPERATIONS);
 
+        // only through AccessorInfo the signer can get the current http client.
+        // we need to create it before the signer is created, so it's shared.
+        let info: Arc<AccessorInfo> = {
+            let am = AccessorInfo::default();
+            am.set_scheme(Scheme::S3)
+                .set_root(&root)
+                .set_name(bucket)
+                .set_native_capability(Capability {
+                    stat: true,
+                    stat_with_if_match: true,
+                    stat_with_if_none_match: true,
+                    stat_with_if_modified_since: true,
+                    stat_with_if_unmodified_since: true,
+                    stat_with_override_cache_control: !self.config.disable_stat_with_override,
+                    stat_with_override_content_disposition: !self.config.disable_stat_with_override,
+                    stat_with_override_content_type: !self.config.disable_stat_with_override,
+                    stat_with_version: self.config.enable_versioning,
+
+                    read: true,
+                    read_with_if_match: true,
+                    read_with_if_none_match: true,
+                    read_with_if_modified_since: true,
+                    read_with_if_unmodified_since: true,
+                    read_with_override_cache_control: true,
+                    read_with_override_content_disposition: true,
+                    read_with_override_content_type: true,
+                    read_with_version: self.config.enable_versioning,
+
+                    write: true,
+                    write_can_empty: true,
+                    write_can_multi: true,
+                    write_can_append: self.config.enable_write_with_append,
+
+                    write_with_cache_control: true,
+                    write_with_content_type: true,
+                    write_with_content_encoding: true,
+                    write_with_if_match: !self.config.disable_write_with_if_match,
+                    write_with_if_not_exists: true,
+                    write_with_user_metadata: true,
+
+                    // The min multipart size of S3 is 5 MiB.
+                    //
+                    // ref: <https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html>
+                    write_multi_min_size: Some(5 * 1024 * 1024),
+                    // The max multipart size of S3 is 5 GiB.
+                    //
+                    // ref: <https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html>
+                    write_multi_max_size: if cfg!(target_pointer_width = "64") {
+                        Some(5 * 1024 * 1024 * 1024)
+                    } else {
+                        Some(usize::MAX)
+                    },
+
+                    delete: true,
+                    delete_max_size: Some(delete_max_size),
+                    delete_with_version: self.config.enable_versioning,
+
+                    copy: true,
+
+                    list: true,
+                    list_with_limit: true,
+                    list_with_start_after: true,
+                    list_with_recursive: true,
+                    list_with_versions: self.config.enable_versioning,
+                    list_with_deleted: self.config.enable_versioning,
+
+                    presign: true,
+                    presign_stat: true,
+                    presign_read: true,
+                    presign_write: true,
+
+                    shared: true,
+
+                    ..Default::default()
+                });
+
+            // allow deprecated api here for compatibility
+            #[allow(deprecated)]
+            if let Some(client) = self.http_client {
+                am.update_http_client(|_| client);
+            }
+
+            am.into()
+        };
+
+        let signer: SignerImpl = if self.config.remote_signing_enabled {
+            match self.config.signer.as_deref() {
+                // default to S3V4RestSigner
+                None | Some(S3_V4_REST_SIGNER) => {
+                    if let Some(signer_uri) = self.config.signer_uri {
+                        let mut config = RestSignerConfig::new(signer_uri).with_info(info.clone());
+                        if let Some(signer_endpoint) = self.config.signer_endpoint {
+                            config = config.with_endpoint(signer_endpoint);
+                        }
+                        if let Some(token) = self.config.token {
+                            config = config.with_token(token);
+                        }
+
+                        SignerImpl::Rest(
+                            RestSigner::new("s3", &region, config)
+                                .map_err(new_request_sign_error)?,
+                        )
+                    } else {
+                        return Err(Error::new(
+                            ErrorKind::ConfigInvalid,
+                            "signer_uri is required when remote_signing_enabled is true",
+                        ));
+                    }
+                }
+                Some(signer) => {
+                    return Err(Error::new(
+                        ErrorKind::ConfigInvalid,
+                        format!("signer \"{}\" is not supported", signer),
+                    ));
+                }
+            }
+        } else {
+            SignerImpl::AwsV4(AwsV4Signer::new("s3", &region))
+        };
+
         Ok(S3Backend {
             core: Arc::new(S3Core {
-                info: {
-                    let am = AccessorInfo::default();
-                    am.set_scheme(Scheme::S3)
-                        .set_root(&root)
-                        .set_name(bucket)
-                        .set_native_capability(Capability {
-                            stat: true,
-                            stat_has_content_encoding: true,
-                            stat_with_if_match: true,
-                            stat_with_if_none_match: true,
-                            stat_with_if_modified_since: true,
-                            stat_with_if_unmodified_since: true,
-                            stat_with_override_cache_control: !self
-                                .config
-                                .disable_stat_with_override,
-                            stat_with_override_content_disposition: !self
-                                .config
-                                .disable_stat_with_override,
-                            stat_with_override_content_type: !self
-                                .config
-                                .disable_stat_with_override,
-                            stat_with_version: self.config.enable_versioning,
-                            stat_has_cache_control: true,
-                            stat_has_content_length: true,
-                            stat_has_content_type: true,
-                            stat_has_content_range: true,
-                            stat_has_etag: true,
-                            stat_has_content_md5: true,
-                            stat_has_last_modified: true,
-                            stat_has_content_disposition: true,
-                            stat_has_user_metadata: true,
-                            stat_has_version: true,
-
-                            read: true,
-                            read_with_if_match: true,
-                            read_with_if_none_match: true,
-                            read_with_if_modified_since: true,
-                            read_with_if_unmodified_since: true,
-                            read_with_override_cache_control: true,
-                            read_with_override_content_disposition: true,
-                            read_with_override_content_type: true,
-                            read_with_version: self.config.enable_versioning,
-
-                            write: true,
-                            write_can_empty: true,
-                            write_can_multi: true,
-                            write_can_append: self.config.enable_write_with_append,
-
-                            write_with_cache_control: true,
-                            write_with_content_type: true,
-                            write_with_content_encoding: true,
-                            write_with_if_match: !self.config.disable_write_with_if_match,
-                            write_with_if_not_exists: true,
-                            write_with_user_metadata: true,
-
-                            // The min multipart size of S3 is 5 MiB.
-                            //
-                            // ref: <https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html>
-                            write_multi_min_size: Some(5 * 1024 * 1024),
-                            // The max multipart size of S3 is 5 GiB.
-                            //
-                            // ref: <https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html>
-                            write_multi_max_size: if cfg!(target_pointer_width = "64") {
-                                Some(5 * 1024 * 1024 * 1024)
-                            } else {
-                                Some(usize::MAX)
-                            },
-
-                            delete: true,
-                            delete_max_size: Some(delete_max_size),
-                            delete_with_version: self.config.enable_versioning,
-
-                            copy: true,
-
-                            list: true,
-                            list_with_limit: true,
-                            list_with_start_after: true,
-                            list_with_recursive: true,
-                            list_with_versions: self.config.enable_versioning,
-                            list_with_deleted: self.config.enable_versioning,
-                            list_has_etag: true,
-                            list_has_content_md5: true,
-                            list_has_content_length: true,
-                            list_has_last_modified: true,
-
-                            presign: true,
-                            presign_stat: true,
-                            presign_read: true,
-                            presign_write: true,
-
-                            shared: true,
-
-                            ..Default::default()
-                        });
-
-                    // allow deprecated api here for compatibility
-                    #[allow(deprecated)]
-                    if let Some(client) = self.http_client {
-                        am.update_http_client(|_| client);
-                    }
-
-                    am.into()
-                },
+                info,
                 bucket: bucket.to_string(),
                 endpoint,
                 root,
@@ -1276,7 +1293,7 @@ mod tests {
 
         for (name, endpoint, bucket, expected) in cases {
             let region = S3Builder::detect_region(endpoint, bucket).await;
-            assert_eq!(region.as_deref(), expected, "{}", name);
+            assert_eq!(region.as_deref(), expected, "{name}");
         }
     }
 }
